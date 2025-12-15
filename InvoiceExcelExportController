@@ -14,10 +14,12 @@ public class InvoiceExcelExportController {
         public List<ProductLineWrapper> productLines { get; set; }
         public List<String> visibleColumns { get; set; }
         public GstSummaryWrapper gstSummary { get; set; }
+        public Map<String, String> totals { get; set; } // NEW: Totals for each column
         
         public InvoiceWrapper() {
             this.productLines = new List<ProductLineWrapper>();
             this.visibleColumns = new List<String>();
+            this.totals = new Map<String, String>();
         }
     }
     
@@ -35,7 +37,6 @@ public class InvoiceExcelExportController {
         public String lineAmount { get; set; }
     }
     
-    // CORRECTED: GST Summary Wrapper with properties instead of methods
     public class GstSummaryWrapper {
         public String taxableValue { get; set; }
         public String sgstPercent { get; set; }
@@ -113,6 +114,9 @@ public class InvoiceExcelExportController {
             
             // Parse GST Summary
             parseGstSummary(inv.GST__c, wrapper);
+            
+            // Calculate totals for numeric columns
+            calculateTotals(wrapper);
             
             invoicesByVendor.get(vendor).add(wrapper);
         }
@@ -200,6 +204,97 @@ public class InvoiceExcelExportController {
             
         } catch (Exception e) {
             System.debug('Error parsing GST JSON: ' + e.getMessage());
+        }
+    }
+    
+    // NEW: Calculate totals for numeric columns
+    private void calculateTotals(InvoiceWrapper wrapper) {
+        // Define which columns should be totaled
+        Set<String> numericColumns = new Set<String>{
+            'quantity', 'unitPrice', 'discountPercent', 
+            'additionalDiscountPercent', 'taxPercent', 'taxAmount', 'lineAmount'
+        };
+        
+        // Initialize totals map
+        Map<String, Decimal> columnSums = new Map<String, Decimal>();
+        
+        // Sum up each numeric column
+        for (ProductLineWrapper line : wrapper.productLines) {
+            // Quantity
+            if (String.isNotBlank(line.quantity)) {
+                Decimal val = parseDecimal(line.quantity);
+                if (val != null) {
+                    columnSums.put('quantity', (columnSums.get('quantity') != null ? columnSums.get('quantity') : 0) + val);
+                }
+            }
+            
+            // Unit Price
+            if (String.isNotBlank(line.unitPrice)) {
+                Decimal val = parseDecimal(line.unitPrice);
+                if (val != null) {
+                    columnSums.put('unitPrice', (columnSums.get('unitPrice') != null ? columnSums.get('unitPrice') : 0) + val);
+                }
+            }
+            
+            // Discount Percent
+            if (String.isNotBlank(line.discountPercent)) {
+                Decimal val = parseDecimal(line.discountPercent);
+                if (val != null) {
+                    columnSums.put('discountPercent', (columnSums.get('discountPercent') != null ? columnSums.get('discountPercent') : 0) + val);
+                }
+            }
+            
+            // Additional Discount Percent
+            if (String.isNotBlank(line.additionalDiscountPercent)) {
+                Decimal val = parseDecimal(line.additionalDiscountPercent);
+                if (val != null) {
+                    columnSums.put('additionalDiscountPercent', (columnSums.get('additionalDiscountPercent') != null ? columnSums.get('additionalDiscountPercent') : 0) + val);
+                }
+            }
+            
+            // Tax Percent
+            if (String.isNotBlank(line.taxPercent)) {
+                Decimal val = parseDecimal(line.taxPercent);
+                if (val != null) {
+                    columnSums.put('taxPercent', (columnSums.get('taxPercent') != null ? columnSums.get('taxPercent') : 0) + val);
+                }
+            }
+            
+            // Tax Amount
+            if (String.isNotBlank(line.taxAmount)) {
+                Decimal val = parseDecimal(line.taxAmount);
+                if (val != null) {
+                    columnSums.put('taxAmount', (columnSums.get('taxAmount') != null ? columnSums.get('taxAmount') : 0) + val);
+                }
+            }
+            
+            // Line Amount
+            if (String.isNotBlank(line.lineAmount)) {
+                Decimal val = parseDecimal(line.lineAmount);
+                if (val != null) {
+                    columnSums.put('lineAmount', (columnSums.get('lineAmount') != null ? columnSums.get('lineAmount') : 0) + val);
+                }
+            }
+        }
+        
+        // Convert decimal totals to formatted strings
+        for (String col : columnSums.keySet()) {
+            Decimal total = columnSums.get(col);
+            if (total != null) {
+                wrapper.totals.put(col, String.valueOf(total.setScale(2)));
+            }
+        }
+    }
+    
+    // Helper method to parse decimal values
+    private Decimal parseDecimal(String value) {
+        if (String.isBlank(value)) {
+            return null;
+        }
+        try {
+            return Decimal.valueOf(value);
+        } catch (Exception e) {
+            return null;
         }
     }
     
