@@ -1,0 +1,266 @@
+public with sharing class InvoiceExcelExportController {
+    
+    // Wrapper class for Invoice
+    public class InvoiceWrapper {
+        public String invoiceNumber {get; set;}
+        public String invoiceDate {get; set;}
+        public Decimal invoiceValue {get; set;}
+        public String dealerName {get; set;}
+        public String subdealerName {get; set;}
+        public String subdealerGST {get; set;}
+        public List<ProductLineWrapper> productLines {get; set;}
+        
+        public InvoiceWrapper() {
+            productLines = new List<ProductLineWrapper>();
+        }
+    }
+    
+    // Wrapper class for Product Line
+    public class ProductLineWrapper {
+        public String productDetail {get; set;}
+        public Decimal quantity {get; set;}
+        public Decimal unitPrice {get; set;}
+        
+        public ProductLineWrapper(String product, Decimal qty, Decimal price) {
+            this.productDetail = product;
+            this.quantity = qty;
+            this.unitPrice = price;
+        }
+    }
+    
+    // Helper class to hold product information during parsing
+    private class ProductInfo {
+        public String productName;
+        public Decimal quantity;
+        public Decimal unitPrice;
+        
+        public ProductInfo(String name, Decimal qty, Decimal price) {
+            this.productName = name;
+            this.quantity = qty;
+            this.unitPrice = price;
+        }
+    }
+    
+    // Public properties for Visualforce page
+    public String fileName {get; set;}
+    public List<String> vendorSheets {get; set;}
+    public Map<String, List<InvoiceWrapper>> invoicesByVendor {get; set;}
+    
+    // Getter method (alternative access)
+    public Map<String, List<InvoiceWrapper>> getInvoicesByVendor() {
+        return invoicesByVendor;
+    }
+    
+    public InvoiceExcelExportController() {
+        fileName = 'Invoice_Export_' + System.now().format('yyyyMMdd_HHmmss');
+        vendorSheets = new List<String>();
+        invoicesByVendor = new Map<String, List<InvoiceWrapper>>();
+        
+        loadData();
+    }
+    
+    private void loadData() {
+        // Query all Document_Extraction__c records
+        List<Document_Extraction__c> records = [
+            SELECT Id,
+                   Invoice_Number__c,
+                   Invoice_Date__c,
+                   Invoice_Value__c,
+                   Dealer_Enterprise_Name__c,
+                   Subdealer_Enterprise_Name__c,
+                   Subdealer_GST_Number__c,
+                   Product_Details__c
+            FROM Document_Extraction__c
+            ORDER BY Dealer_Enterprise_Name__c NULLS FIRST, Invoice_Date__c ASC, Invoice_Number__c ASC
+        ];
+        
+        for(Document_Extraction__c rec : records) {
+            String vendor = String.isNotBlank(rec.Dealer_Enterprise_Name__c) 
+                            ? rec.Dealer_Enterprise_Name__c 
+                            : 'Unknown_Vendor';
+            
+            // Clean vendor name for sheet name
+            vendor = cleanSheetName(vendor);
+            
+            // Initialize vendor list if needed
+            if(!invoicesByVendor.containsKey(vendor)) {
+                invoicesByVendor.put(vendor, new List<InvoiceWrapper>());
+                vendorSheets.add(vendor);
+            }
+            
+            // Create Invoice Wrapper
+            InvoiceWrapper invoice = new InvoiceWrapper();
+            invoice.invoiceNumber = rec.Invoice_Number__c;
+            
+            // Format date
+            if(rec.Invoice_Date__c != null) {
+                Date d = rec.Invoice_Date__c;
+                invoice.invoiceDate =
+                    String.valueOf(d.day()).leftPad(2, '0') + '-' +
+                    String.valueOf(d.month()).leftPad(2, '0') + '-' +
+                    String.valueOf(d.year());
+            } else {
+                invoice.invoiceDate = '';
+            }
+            
+            invoice.invoiceValue = rec.Invoice_Value__c;
+            invoice.dealerName = rec.Dealer_Enterprise_Name__c;
+            invoice.subdealerName = rec.Subdealer_Enterprise_Name__c;
+            invoice.subdealerGST = rec.Subdealer_GST_Number__c;
+            
+            // Parse product details with quantity and price
+            List<ProductInfo> productInfos = parseProductDetails(rec);
+            
+            // Add product lines to invoice
+            if(productInfos.isEmpty()) {
+                // If no products, add a blank line
+                invoice.productLines.add(new ProductLineWrapper('', null, null));
+            } else {
+                for(ProductInfo prodInfo : productInfos) {
+                    invoice.productLines.add(
+                        new ProductLineWrapper(
+                            prodInfo.productName, 
+                            prodInfo.quantity, 
+                            prodInfo.unitPrice
+                        )
+                    );
+                }
+            }
+            
+            // Add invoice to vendor's list
+            invoicesByVendor.get(vendor).add(invoice);
+        }
+    }
+    
+    // Parse product details from Product_Details__c field
+    private List<ProductInfo> parseProductDetails(Document_Extraction__c rec) {
+        List<ProductInfo> products = new List<ProductInfo>();
+        
+        if(String.isBlank(rec.Product_Details__c)) {
+            return products;
+        }
+        
+        String p = rec.Product_Details__c.trim();
+        
+        // Try to parse as JSON first (from updated DocumentTextSaver)
+        if(p.startsWith('[')) {
+            List<ProductInfo> jsonProducts = parseFromJson(p);
+            if(jsonProducts != null && !jsonProducts.isEmpty()) {
+                return jsonProducts;
+            }
+        }
+        
+        // FALLBACK: Parse as comma-separated text (old format or Markdown)
+        // Remove JSON array brackets and quotes if present
+        p = p.replaceAll('\\[|\\]|\"', ' ');
+        
+        // Normalize separators to a pipe
+        p = p.replaceAll('\\r\\n|\\n|\\r', '|');
+        p = p.replaceAll(',', '|');
+        p = p.replaceAll(';', '|');
+        p = p.replaceAll('\\|\\s*\\|', '|'); // collapse double pipes
+        
+        for(String part : p.split('\\|')) {
+            String trimmedProduct = part != null ? part.trim() : '';
+            if(String.isNotBlank(trimmedProduct)) {
+                products.add(new ProductInfo(trimmedProduct, null, null));
+            }
+        }
+        
+        return products;
+    }
+    
+    // Parse products from JSON format
+    private List<ProductInfo> parseFromJson(String jsonString) {
+        List<ProductInfo> products = new List<ProductInfo>();
+        
+        try {
+            List<Object> productList = (List<Object>) JSON.deserializeUntyped(jsonString);
+            
+            for(Object prodObj : productList) {
+                Map<String, Object> product = (Map<String, Object>) prodObj;
+                
+                String productName = product.containsKey('productName') ? 
+                    String.valueOf(product.get('productName')) : '';
+                
+                Decimal quantity = product.containsKey('quantity') ? 
+                    parseDecimalValue(product.get('quantity')) : null;
+                
+                Decimal unitPrice = product.containsKey('unitPrice') ? 
+                    parseDecimalValue(product.get('unitPrice')) : null;
+                
+                if(String.isNotBlank(productName)) {
+                    products.add(new ProductInfo(productName, quantity, unitPrice));
+                }
+            }
+            
+            System.debug('Successfully parsed ' + products.size() + ' products from JSON');
+            
+        } catch(Exception e) {
+            System.debug('JSON parse failed: ' + e.getMessage());
+            return null;
+        }
+        
+        return products;
+    }
+    
+    // Helper to parse decimal values
+    private Decimal parseDecimalValue(Object value) {
+        if(value == null) return null;
+        
+        try {
+            // Handle numeric types directly
+            if(value instanceof Decimal) {
+                return (Decimal) value;
+            }
+            if(value instanceof Integer) {
+                return Decimal.valueOf((Integer) value);
+            }
+            
+            // Parse as string
+            String valueStr = String.valueOf(value).trim();
+            valueStr = valueStr.replaceAll('[^0-9.]', '');
+            
+            if(String.isBlank(valueStr)) return null;
+            
+            return Decimal.valueOf(valueStr);
+            
+        } catch(Exception e) {
+            System.debug('Error parsing decimal: ' + value + ' - ' + e.getMessage());
+            return null;
+        }
+    }
+    
+    // Clean sheet name to meet Excel requirements and ensure uniqueness
+    private String cleanSheetName(String name) {
+        if(String.isBlank(name)) {
+            name = 'Sheet1';
+        }
+        
+        // Remove invalid characters: \ / * ? : [ ]
+        name = name.replaceAll('[\\\\/:*?\\[\\]]', '');
+        name = name.trim();
+        
+        // Limit to 31 characters (Excel limit)
+        if(name.length() > 31) {
+            name = name.substring(0, 31);
+        }
+        
+        if(String.isBlank(name)) {
+            name = 'Sheet1';
+        }
+        
+        // Ensure unique sheet name if duplicate (append index)
+        String base = name;
+        Integer idx = 1;
+        while(invoicesByVendor.containsKey(name)) {
+            String suffix = '_' + idx;
+            Integer allowedLen = 31 - suffix.length();
+            String truncatedBase = base.length() > allowedLen ? base.substring(0, allowedLen) : base;
+            name = truncatedBase + suffix;
+            idx++;
+        }
+        
+        return name;
+    }
+}
