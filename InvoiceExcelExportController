@@ -12,7 +12,8 @@ public class InvoiceExcelExportController {
         public String subdealerName { get; set; }
         public String subdealerGST { get; set; }
         public List<ProductLineWrapper> productLines { get; set; }
-        public List<String> visibleColumns { get; set; } // NEW: Dynamic columns
+        public List<String> visibleColumns { get; set; }
+        public GstSummaryWrapper gstSummary { get; set; }
         
         public InvoiceWrapper() {
             this.productLines = new List<ProductLineWrapper>();
@@ -32,21 +33,41 @@ public class InvoiceExcelExportController {
         public String taxPercent { get; set; }
         public String taxAmount { get; set; }
         public String lineAmount { get; set; }
+    }
+    
+    // CORRECTED: GST Summary Wrapper with properties instead of methods
+    public class GstSummaryWrapper {
+        public String taxableValue { get; set; }
+        public String sgstPercent { get; set; }
+        public String sgstAmount { get; set; }
+        public String cgstPercent { get; set; }
+        public String cgstAmount { get; set; }
+        public String roundOff { get; set; }
+        public String finalInvoiceValue { get; set; }
         
-        // NEW: Method to get field value by name
-        public String getFieldValue(String fieldName) {
-            if (fieldName == 'productName') return productName;
-            if (fieldName == 'hsnSac') return hsnSac;
-            if (fieldName == 'quantity') return quantity;
-            if (fieldName == 'quantityUnit') return quantityUnit;
-            if (fieldName == 'unitPrice') return unitPrice;
-            if (fieldName == 'rateUnit') return rateUnit;
-            if (fieldName == 'discountPercent') return discountPercent;
-            if (fieldName == 'additionalDiscountPercent') return additionalDiscountPercent;
-            if (fieldName == 'taxPercent') return taxPercent;
-            if (fieldName == 'taxAmount') return taxAmount;
-            if (fieldName == 'lineAmount') return lineAmount;
-            return null;
+        // Convert methods to properties for Visualforce access
+        public Boolean hasSgst {
+            get {
+                return String.isNotBlank(sgstPercent) || String.isNotBlank(sgstAmount);
+            }
+        }
+        
+        public Boolean hasCgst {
+            get {
+                return String.isNotBlank(cgstPercent) || String.isNotBlank(cgstAmount);
+            }
+        }
+        
+        public Boolean hasRoundOff {
+            get {
+                return String.isNotBlank(roundOff);
+            }
+        }
+        
+        public Boolean hasFinalValue {
+            get {
+                return String.isNotBlank(finalInvoiceValue);
+            }
         }
     }
     
@@ -54,11 +75,11 @@ public class InvoiceExcelExportController {
         vendorSheets = new List<String>();
         invoicesByVendor = new Map<String, List<InvoiceWrapper>>();
         
-        // Get invoice records (removed WHERE clause for Long Text field)
+        // Get invoice records
         List<Document_Extraction__c> invoices = [
             SELECT Id, Invoice_Number__c, Invoice_Date__c, Invoice_Value__c,
                    Dealer_Enterprise_Name__c, Subdealer_Enterprise_Name__c,
-                   Subdealer_GST_Number__c, Product_Details__c
+                   Subdealer_GST_Number__c, Product_Details__c, GST__c
             FROM Document_Extraction__c
             ORDER BY Dealer_Enterprise_Name__c, Invoice_Number__c
         ];
@@ -90,6 +111,9 @@ public class InvoiceExcelExportController {
             // Parse product details JSON
             parseProductDetails(inv.Product_Details__c, wrapper);
             
+            // Parse GST Summary
+            parseGstSummary(inv.GST__c, wrapper);
+            
             invoicesByVendor.get(vendor).add(wrapper);
         }
         
@@ -100,7 +124,6 @@ public class InvoiceExcelExportController {
         try {
             List<Object> products = (List<Object>) JSON.deserializeUntyped(productJson);
             
-            // NEW: Track which columns have at least one non-null value
             Set<String> columnsWithData = new Set<String>();
             
             for (Object prodObj : products) {
@@ -137,7 +160,7 @@ public class InvoiceExcelExportController {
                 wrapper.productLines.add(line);
             }
             
-            // NEW: Build visible columns list in desired order
+            // Build visible columns list in desired order
             List<String> allColumns = new List<String>{
                 'productName', 'hsnSac', 'quantity', 'quantityUnit', 
                 'unitPrice', 'rateUnit', 'discountPercent', 
@@ -155,13 +178,39 @@ public class InvoiceExcelExportController {
         }
     }
     
+    // Parse GST Summary from JSON
+    private void parseGstSummary(String gstJson, InvoiceWrapper wrapper) {
+        if (String.isBlank(gstJson)) {
+            return;
+        }
+        
+        try {
+            Map<String, Object> gstData = (Map<String, Object>) JSON.deserializeUntyped(gstJson);
+            
+            GstSummaryWrapper gst = new GstSummaryWrapper();
+            gst.taxableValue = getStringValue(gstData, 'taxableValue');
+            gst.sgstPercent = getStringValue(gstData, 'sgstPercent');
+            gst.sgstAmount = getStringValue(gstData, 'sgstAmount');
+            gst.cgstPercent = getStringValue(gstData, 'cgstPercent');
+            gst.cgstAmount = getStringValue(gstData, 'cgstAmount');
+            gst.roundOff = getStringValue(gstData, 'roundOff');
+            gst.finalInvoiceValue = getStringValue(gstData, 'finalInvoiceValue');
+            
+            wrapper.gstSummary = gst;
+            
+        } catch (Exception e) {
+            System.debug('Error parsing GST JSON: ' + e.getMessage());
+        }
+    }
+    
     private String getStringValue(Map<String, Object> dataMap, String key) {
         Object value = dataMap.get(key);
         if (value == null) return null;
-        return String.valueOf(value);
+        String strValue = String.valueOf(value);
+        // Return null if value is empty string
+        return String.isNotBlank(strValue) ? strValue : null;
     }
     
-    // NEW: Helper method to get column header label
     public String getColumnLabel(String columnName) {
         Map<String, String> labelMap = new Map<String, String>{
             'productName' => 'Product Name',
