@@ -1,0 +1,478 @@
+public with sharing class DocumentTextSaver {
+    
+    public static void processDocument(Id contentDocumentId) {
+        try {
+            System.debug('=== PROCESS DOCUMENT START ===');
+            System.debug('ContentDocumentId: ' + contentDocumentId);
+            
+            String extractedText = DocumentTextExtractorController.extractTextFromDocument(contentDocumentId);
+            
+            System.debug('=== EXTRACTED TEXT RECEIVED ===');
+            System.debug('Text length: ' + (extractedText != null ? extractedText.length() : 0));
+            
+            saveExtractedText(contentDocumentId, extractedText);
+            
+            System.debug('=== PROCESS DOCUMENT END ===');
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, '=== CRITICAL ERROR IN PROCESS DOCUMENT ===');
+            System.debug(LoggingLevel.ERROR, 'Error: ' + e.getMessage());
+            System.debug(LoggingLevel.ERROR, 'Stack: ' + e.getStackTraceString());
+            throw e;
+        }
+    }
+    
+    private static void saveExtractedText(Id docId, String text) {
+        System.debug('=== SAVE EXTRACTED TEXT START ===');
+        
+        List<Document_Extraction__c> existing =
+            [SELECT Id FROM Document_Extraction__c WHERE ContentDocumentId__c = :docId LIMIT 1];
+        
+        Document_Extraction__c record = existing.isEmpty() ? 
+            new Document_Extraction__c(ContentDocumentId__c = docId) : existing[0];
+        
+        System.debug('Record mode: ' + (existing.isEmpty() ? 'INSERT' : 'UPDATE'));
+        
+        record.Extracted_Text__c = text;
+        
+        if (String.isNotBlank(text)) {
+            System.debug('=== TEXT IS NOT BLANK, DETECTING FORMAT ===');
+            
+            // Detect if the text is JSON or Markdown format
+            Boolean isJsonFormat = isJsonResponse(text);
+            System.debug('Format detected: ' + (isJsonFormat ? 'JSON' : 'MARKDOWN'));
+            
+            if (isJsonFormat) {
+                // NEW FORMAT: Parse as JSON
+                parseJsonFormat(text, record);
+            } else {
+                // OLD FORMAT: Parse as Markdown
+                parseMarkdownFormat(text, record);
+            }
+        }
+        
+        System.debug('=== ATTEMPTING UPSERT ===');
+        try {
+            upsert record;
+            System.debug('=== UPSERT SUCCESSFUL ===');
+            System.debug('Record Id: ' + record.Id);
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, '=== UPSERT FAILED ===');
+            System.debug(LoggingLevel.ERROR, 'Error: ' + e.getMessage());
+            throw e;
+        }
+    }
+    
+    /**
+     * Detect if the response is JSON format
+     */
+    private static Boolean isJsonResponse(String text) {
+        if (String.isBlank(text)) return false;
+        
+        String trimmed = text.trim();
+        
+        // Remove markdown code blocks
+        if (trimmed.startsWith('```json') || trimmed.startsWith('```')) {
+            trimmed = trimmed.replaceAll('```json|```', '').trim();
+        }
+        
+        // Check if it starts with { and contains JSON-like structure
+        return trimmed.startsWith('{') && 
+               (trimmed.contains('"invoiceNumber"') || 
+                trimmed.contains('"invoiceDate"'));
+    }
+    
+    /**
+     * Parse JSON format (NEW)
+     */
+    private static void parseJsonFormat(String text, Document_Extraction__c record) {
+        try {
+            System.debug('=== PARSING JSON FORMAT ===');
+            System.debug('Input text length: ' + text.length());
+            System.debug('First 300 chars: ' + text.substring(0, Math.min(300, text.length())));
+            
+            Map<String, Object> jsonData = parseJsonFromText(text);
+            
+            if (jsonData != null) {
+                System.debug('JSON Data Keys: ' + jsonData.keySet());
+                System.debug('JSON Data Size: ' + jsonData.size());
+                
+                // Invoice Number
+                Object invNumObj = jsonData.get('invoiceNumber');
+                record.Invoice_Number__c = invNumObj != null ? String.valueOf(invNumObj) : null;
+                System.debug('Invoice Number RAW: ' + invNumObj + ' | ASSIGNED: ' + record.Invoice_Number__c);
+                
+                // Invoice Date
+                Object invDateObj = jsonData.get('invoiceDate');
+                String invDateStr = invDateObj != null ? String.valueOf(invDateObj) : null;
+                record.Invoice_Date__c = parseInvoiceDateFromJson(invDateStr);
+                System.debug('Invoice Date RAW: ' + invDateObj + ' | PARSED: ' + record.Invoice_Date__c);
+                
+                // Invoice Value
+                Object invValueObj = jsonData.get('invoiceValue');
+                record.Invoice_Value__c = parseInvoiceValue(invValueObj);
+                System.debug('Invoice Value RAW: ' + invValueObj + ' | PARSED: ' + record.Invoice_Value__c);
+                
+                // Dealer Enterprise Name
+                Object dealerObj = jsonData.get('dealerEnterpriseName');
+                record.Dealer_Enterprise_Name__c = dealerObj != null ? String.valueOf(dealerObj) : null;
+                System.debug('Dealer Name RAW: ' + dealerObj + ' | ASSIGNED: ' + record.Dealer_Enterprise_Name__c);
+                
+                // Subdealer Enterprise Name
+                Object subdealerObj = jsonData.get('subdealerEnterpriseName');
+                record.Subdealer_Enterprise_Name__c = subdealerObj != null ? String.valueOf(subdealerObj) : null;
+                System.debug('Subdealer Name RAW: ' + subdealerObj + ' | ASSIGNED: ' + record.Subdealer_Enterprise_Name__c);
+                
+                // Subdealer GST Number
+                Object gstObj = jsonData.get('subdealerGSTNumber');
+                record.Subdealer_GST_Number__c = gstObj != null ? String.valueOf(gstObj) : null;
+                System.debug('Subdealer GST RAW: ' + gstObj + ' | ASSIGNED: ' + record.Subdealer_GST_Number__c);
+                
+                // MODIFIED: Store complete product details as JSON (includes quantity & price)
+                Object productsObj = jsonData.get('productDetails');
+                record.Product_Details__c = serializeProductDetails(productsObj);
+                System.debug('Products RAW: ' + productsObj + ' | STORED: ' + record.Product_Details__c);
+                
+                System.debug('=== ALL FIELDS PROCESSED ===');
+            } else {
+                System.debug(LoggingLevel.ERROR, '=== JSON DATA IS NULL ===');
+            }
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, '=== JSON PARSING ERROR ===');
+            System.debug(LoggingLevel.ERROR, 'Error: ' + e.getMessage());
+            System.debug(LoggingLevel.ERROR, 'Stack: ' + e.getStackTraceString());
+        }
+    }
+    
+    /**
+     * Parse Markdown format (OLD - WORKING)
+     */
+    private static void parseMarkdownFormat(String text, Document_Extraction__c record) {
+        try {
+            System.debug('=== PARSING MARKDOWN FORMAT ===');
+            
+            record.Invoice_Number__c = extractValueAfterLabel(text, 'Invoice Number');
+            System.debug('Invoice Number: ' + record.Invoice_Number__c);
+            
+            record.Invoice_Date__c = extractInvoiceDateFromMarkdown(text);
+            System.debug('Invoice Date: ' + record.Invoice_Date__c);
+            
+            record.Invoice_Value__c = extractGrandTotal(text);
+            System.debug('Invoice Value: ' + record.Invoice_Value__c);
+            
+            record.Dealer_Enterprise_Name__c = extractSupplierName(text);
+            System.debug('Dealer Name: ' + record.Dealer_Enterprise_Name__c);
+            
+            record.Subdealer_Enterprise_Name__c = extractBuyerName(text);
+            System.debug('Subdealer Name: ' + record.Subdealer_Enterprise_Name__c);
+            
+            record.Subdealer_GST_Number__c = extractBuyerGSTIN(text);
+            System.debug('Subdealer GST: ' + record.Subdealer_GST_Number__c);
+            
+            record.Product_Details__c = extractProductDetailsFromMarkdown(text);
+            System.debug('Products: ' + record.Product_Details__c);
+            
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Markdown parsing error: ' + e.getMessage());
+        }
+    }
+    
+    // ========== JSON PARSING METHODS ==========
+    
+    private static Map<String, Object> parseJsonFromText(String text) {
+        if (String.isBlank(text)) {
+            System.debug('parseJsonFromText: Input text is blank');
+            return null;
+        }
+        
+        try {
+            String jsonString = text.trim();
+            System.debug('Original text length: ' + jsonString.length());
+            System.debug('Text starts with: ' + jsonString.substring(0, Math.min(50, jsonString.length())));
+            
+            // Remove markdown code blocks
+            if (jsonString.startsWith('```json')) {
+                System.debug('Removing ```json prefix');
+                jsonString = jsonString.substring(7);
+            } else if (jsonString.startsWith('```')) {
+                System.debug('Removing ``` prefix');
+                jsonString = jsonString.substring(3);
+            }
+            
+            if (jsonString.endsWith('```')) {
+                System.debug('Removing ``` suffix');
+                jsonString = jsonString.substring(0, jsonString.length() - 3);
+            }
+            
+            jsonString = jsonString.trim();
+            
+            // CRITICAL FIX: Replace non-breaking spaces (char code 160) with regular spaces (char code 32)
+            jsonString = jsonString.replace(String.fromCharArray(new Integer[]{160}), ' ');
+            
+            // Also remove any other problematic whitespace characters
+            jsonString = jsonString.replaceAll('\\u00A0', ' '); // Non-breaking space
+            jsonString = jsonString.replaceAll('\\u2003', ' '); // Em space
+            jsonString = jsonString.replaceAll('\\u2002', ' '); // En space
+            
+            System.debug('Cleaned JSON length: ' + jsonString.length());
+            System.debug('Cleaned JSON starts with: ' + jsonString.substring(0, Math.min(100, jsonString.length())));
+            
+            // Attempt to parse
+            System.debug('Attempting JSON.deserializeUntyped...');
+            Map<String, Object> result = (Map<String, Object>) JSON.deserializeUntyped(jsonString);
+            System.debug('✓ JSON parsed successfully!');
+            System.debug('Keys found: ' + result.keySet());
+            System.debug('Number of keys: ' + result.size());
+            
+            return result;
+            
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, '✗ JSON PARSE FAILED');
+            System.debug(LoggingLevel.ERROR, 'Error Type: ' + e.getTypeName());
+            System.debug(LoggingLevel.ERROR, 'Error Message: ' + e.getMessage());
+            System.debug(LoggingLevel.ERROR, 'Stack Trace: ' + e.getStackTraceString());
+            return null;
+        }
+    }
+    
+    private static Date parseInvoiceDateFromJson(String dateStr) {
+        if (String.isBlank(dateStr)) return null;
+        
+        try {
+            dateStr = dateStr.trim();
+            List<String> parts = dateStr.split('-');
+            
+            if (parts.size() == 3) {
+                Integer day = Integer.valueOf(parts[0]);
+                Integer year = Integer.valueOf(parts[2]);
+                Integer month;
+                
+                String monthPart = parts[1].toLowerCase();
+                Map<String, Integer> monthMap = new Map<String, Integer>{
+                    'jan' => 1, 'january' => 1, 'feb' => 2, 'february' => 2,
+                    'mar' => 3, 'march' => 3, 'apr' => 4, 'april' => 4,
+                    'may' => 5, 'jun' => 6, 'june' => 6,
+                    'jul' => 7, 'july' => 7, 'aug' => 8, 'august' => 8,
+                    'sep' => 9, 'september' => 9, 'oct' => 10, 'october' => 10,
+                    'nov' => 11, 'november' => 11, 'dec' => 12, 'december' => 12
+                };
+                
+                if (monthMap.containsKey(monthPart)) {
+                    month = monthMap.get(monthPart);
+                } else {
+                    month = Integer.valueOf(parts[1]);
+                }
+                
+                if (year < 100) {
+                    year = 2000 + year;
+                }
+                
+                return Date.newInstance(year, month, day);
+            }
+        } catch (Exception e) { 
+            System.debug(LoggingLevel.ERROR, 'Date parsing error: ' + e.getMessage());
+        }
+        return null;
+    }
+    
+    private static Decimal parseInvoiceValue(Object valueObj) {
+        if (valueObj == null) return null;
+        
+        try {
+            String valueStr = String.valueOf(valueObj);
+            valueStr = valueStr.replaceAll('[^0-9.]', '');
+            
+            if (String.isBlank(valueStr)) return null;
+            
+            return Decimal.valueOf(valueStr);
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Value parsing error: ' + e.getMessage());
+            return null;
+        }
+    }
+    
+    // NEW METHOD: Serialize complete product details with quantity and price
+    private static String serializeProductDetails(Object productDetailsObj) {
+        if (productDetailsObj == null) return null;
+        
+        try {
+            // Simply serialize the entire product array as JSON
+            // This preserves productName, quantity, and unitPrice
+            return JSON.serialize(productDetailsObj);
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Product serialization error: ' + e.getMessage());
+            // Fallback: extract only product names
+            return extractProductNamesFromJson(productDetailsObj);
+        }
+    }
+    
+    // KEPT FOR BACKWARD COMPATIBILITY
+    private static String extractProductNamesFromJson(Object productDetailsObj) {
+        if (productDetailsObj == null) return null;
+        
+        try {
+            List<Object> productList = (List<Object>) productDetailsObj;
+            List<String> productNames = new List<String>();
+            
+            for (Object productObj : productList) {
+                Map<String, Object> product = (Map<String, Object>) productObj;
+                String productName = (String) product.get('productName');
+                
+                if (String.isNotBlank(productName)) {
+                    productNames.add(productName);
+                }
+            }
+            
+            return String.join(productNames, ', ');
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Product extraction error: ' + e.getMessage());
+            return null;
+        }
+    }
+    
+    // ========== MARKDOWN PARSING METHODS (OLD FORMAT) ==========
+    
+    private static String extractValueAfterLabel(String text, String label) {
+        try {
+            String searchPattern = '**' + label + '**:';
+            Integer startPos = text.indexOf(searchPattern);
+            
+            if (startPos != -1) {
+                startPos = startPos + searchPattern.length();
+                Integer endPos = text.indexOf('\n', startPos);
+                
+                if (endPos == -1) {
+                    endPos = text.length(); 
+                }
+                
+                String value = text.substring(startPos, endPos).trim();
+                value = value.removeStart('**').removeEnd('**').trim();
+                return value;
+            }
+        } catch (Exception e) {
+            System.debug('Error extracting label "' + label + '": ' + e.getMessage());
+        }
+        return null;
+    }
+    
+    private static Date extractInvoiceDateFromMarkdown(String text) {
+        try {
+            String dateStr = extractValueAfterLabel(text, 'Invoice Date');
+            if (String.isNotBlank(dateStr)) {
+                List<String> parts = dateStr.split('-');
+                if (parts.size() == 3) {
+                    Integer day = Integer.valueOf(parts[0]);
+                    String monthStr = parts[1];
+                    Integer year = Integer.valueOf('20' + parts[2]); 
+                    
+                    Map<String, Integer> monthMap = new Map<String, Integer>{
+                        'Jan' => 1, 'Feb' => 2, 'Mar' => 3, 'Apr' => 4,
+                        'May' => 5, 'Jun' => 6, 'Jul' => 7, 'Aug' => 8,
+                        'Sep' => 9, 'Oct' => 10, 'Nov' => 11, 'Dec' => 12
+                    };
+                    
+                    Integer month = monthMap.get(monthStr);
+                    if (month != null) {
+                        return Date.newInstance(year, month, day);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.debug('Error extracting markdown date: ' + e.getMessage());
+        }
+        return null;
+    }
+    
+    private static Decimal extractGrandTotal(String text) {
+        try {
+            String valueStr = extractValueAfterLabel(text, 'Grand Total');
+            if (String.isNotBlank(valueStr)) {
+                valueStr = valueStr.replace(',', '').removeEnd(' INR').trim(); 
+                return Decimal.valueOf(valueStr);
+            }
+        } catch (Exception e) {
+            System.debug('Error extracting Grand Total: ' + e.getMessage());
+        }
+        return null;
+    }
+    
+    private static String extractSupplierName(String text) {
+        return extractNestedValue(text, '**Supplier/Vendor**:', '**Buyer/Customer (Bill to)**:', '**Name**:');
+    }
+    
+    private static String extractBuyerName(String text) {
+        return extractNestedValue(text, '**Buyer/Customer (Bill to)**:', '**Consignee (Ship to)**:', '**Name**:');
+    }
+    
+    private static String extractBuyerGSTIN(String text) {
+        return extractNestedValue(text, '**Buyer/Customer (Bill to)**:', '**Consignee (Ship to)**:', '**GSTIN/UIN**:');
+    }
+    
+    private static String extractNestedValue(String text, String sectionStart, String sectionEnd, String valueLabel) {
+        try {
+            Integer startPos = text.indexOf(sectionStart);
+            Integer endPos = text.indexOf(sectionEnd, startPos);
+            
+            if (startPos != -1 && endPos != -1) {
+                String section = text.substring(startPos, endPos);
+                
+                Integer valueStart = section.indexOf(valueLabel);
+                if (valueStart != -1) {
+                    valueStart += valueLabel.length();
+                    Integer valueEnd = section.indexOf('\n', valueStart);
+                    if (valueEnd == -1) valueEnd = section.length();
+                    
+                    String value = section.substring(valueStart, valueEnd).trim();
+                    return value;
+                }
+            }
+        } catch (Exception e) {
+            System.debug('Error extracting nested value "' + valueLabel + '": ' + e.getMessage());
+        }
+        return null;
+    }
+    
+    private static String extractProductDetailsFromMarkdown(String text) {
+        try {
+            List<String> products = new List<String>();
+            
+            Integer tableStart = text.indexOf('| Sl No.'); 
+            if (tableStart == -1) return null;
+            
+            Integer tableEnd = text.indexOf('Financial Summary', tableStart);
+            if (tableEnd == -1) return null;
+            
+            String tableSection = text.substring(tableStart, tableEnd);
+            String[] lines = tableSection.split('\n');
+            
+            Boolean pastSeparator = false;
+            
+            for (String line : lines) {
+                line = line.trim();
+                
+                if (line.contains(':---')) {
+                    pastSeparator = true;
+                    continue;
+                }
+                
+                if (pastSeparator && line.startsWith('|') && line.endsWith('|')) {
+                    String[] columns = line.split('\\|');
+                    
+                    if (columns.size() >= 3) {
+                        String productName = columns[2].trim();
+                        
+                        if (String.isNotBlank(productName) && !productName.startsWith('**Total**')) {
+                            products.add(productName);
+                        }
+                    }
+                }
+            }
+            
+            if (!products.isEmpty()) {
+                return String.join(products, ', ');
+            }
+        } catch (Exception e) {
+            System.debug('Error extracting markdown products: ' + e.getMessage());
+        }
+        return null;
+    }
+}
