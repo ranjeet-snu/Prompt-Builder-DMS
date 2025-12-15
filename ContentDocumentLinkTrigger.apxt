@@ -1,0 +1,38 @@
+trigger ContentDocumentLinkTrigger on ContentDocumentLink (after insert) {
+    
+    System.debug('=== TRIGGER FIRED ===');
+    System.debug('Trigger.new size: ' + Trigger.new.size());
+
+    Set<Id> docIds = new Set<Id>();
+    for (ContentDocumentLink cdl : Trigger.new) {
+        System.debug('Processing CDL: ' + cdl.Id);
+        System.debug('ContentDocumentId: ' + cdl.ContentDocumentId);
+        System.debug('LinkedEntityId: ' + cdl.LinkedEntityId);
+        
+        if (cdl.ContentDocumentId != null) {
+            docIds.add(cdl.ContentDocumentId);
+        }
+    }
+
+    System.debug('Total unique document IDs: ' + docIds.size());
+
+    if (docIds.isEmpty()) {
+        System.debug('No document IDs to process');
+        return;
+    }
+
+    // Process each document
+    for (Id docId : docIds) {
+        try {
+            System.debug('=== PROCESSING DOCUMENT: ' + docId + ' ===');
+            DocumentTextSaver.processDocument(docId);
+            System.debug('=== DOCUMENT PROCESSED SUCCESSFULLY ===');
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, '=== FAILED TO PROCESS DOCUMENT: ' + docId + ' ===');
+            System.debug(LoggingLevel.ERROR, 'Error: ' + e.getMessage());
+            System.debug(LoggingLevel.ERROR, 'Stack: ' + e.getStackTraceString());
+        }
+    }
+    
+    System.debug('=== TRIGGER COMPLETED ===');
+}
