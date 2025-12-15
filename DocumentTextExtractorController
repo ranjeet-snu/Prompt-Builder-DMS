@@ -1,0 +1,81 @@
+public with sharing class DocumentTextExtractorController { 
+    @AuraEnabled 
+    public static String extractTextFromDocument(Id contentDocumentId) { 
+        try { 
+            if (contentDocumentId == null) { 
+                throw new AuraHandledException('contentDocumentId is required.'); 
+            }
+            
+            ContentVersion cv = [
+                SELECT ContentDocumentId
+                FROM ContentVersion
+                WHERE ContentDocumentId = :contentDocumentId
+                AND IsLatest = true
+                LIMIT 1
+            ];
+            
+            if (cv == null || cv.ContentDocumentId == null) {
+                throw new AuraHandledException('No latest ContentVersion found for the provided ContentDocumentId.');
+            }
+            
+            // Build WrappedValue for Input:ContentDocument
+            Map<String, String> contentDocument = new Map<String, String>();
+            contentDocument.put('id', cv.ContentDocumentId);
+            ConnectApi.WrappedValue contentDocumentValue = new ConnectApi.WrappedValue();
+            contentDocumentValue.value = contentDocument;
+            Map<String, ConnectApi.WrappedValue> inputParams = new Map<String, ConnectApi.WrappedValue>();
+            inputParams.put('Input:ContentDocument', contentDocumentValue);
+            
+            // Build Prompt Template execution input
+            ConnectApi.EinsteinPromptTemplateGenerationsInput execInput = new ConnectApi.EinsteinPromptTemplateGenerationsInput();
+            execInput.additionalConfig = new ConnectApi.EinsteinLlmAdditionalConfigInput();
+            execInput.additionalConfig.applicationName = 'PromptBuilderPreview';
+            execInput.isPreview = false;
+            execInput.inputParams = inputParams;
+            
+            // Call your template
+            ConnectApi.EinsteinPromptTemplateGenerationsRepresentation outRep =
+                ConnectApi.EinsteinLLM.generateMessagesForPromptTemplate(
+                    'INVOICE_TO_TXT',
+                    execInput
+                );
+            
+            if (outRep == null || outRep.generations == null || outRep.generations.isEmpty()) {
+                throw new AuraHandledException('The model returned no generations.');
+            }
+            
+            // Get the raw text response
+            String rawText = outRep.generations[0].text;
+            
+            // ADD DETAILED DEBUGGING
+            System.debug('=== RAW AI RESPONSE START ===');
+            System.debug('Response Length: ' + rawText.length());
+            System.debug('First 500 characters: ' + rawText.substring(0, Math.min(500, rawText.length())));
+            System.debug('Last 100 characters: ' + rawText.substring(Math.max(0, rawText.length() - 100)));
+            System.debug('=== RAW AI RESPONSE END ===');
+            
+            // Check if it contains JSON
+            if (rawText.contains('{') && rawText.contains('}')) {
+                System.debug('Response contains JSON braces');
+                Integer jsonStart = rawText.indexOf('{');
+                Integer jsonEnd = rawText.lastIndexOf('}') + 1;
+                System.debug('JSON appears to start at position: ' + jsonStart);
+                System.debug('JSON appears to end at position: ' + jsonEnd);
+            } else {
+                System.debug('WARNING: Response does not contain JSON braces!');
+            }
+            
+            // Check for markdown
+            if (rawText.contains('```')) {
+                System.debug('Response contains markdown code blocks');
+            }
+            
+            return rawText;
+            
+        } catch (Exception e) {
+            System.debug('ERROR in extractTextFromDocument: ' + e.getMessage());
+            System.debug('Stack trace: ' + e.getStackTraceString());
+            throw new AuraHandledException(e.getMessage());
+        }
+    }
+}
