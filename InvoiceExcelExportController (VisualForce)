@@ -109,14 +109,27 @@
             
             <br/>
             
-            <!-- Product Details Table -->
+            <!-- Product Details Table - DYNAMIC COLUMNS -->
             <table class="product-table">
                 <thead>
                     <tr>
-                        <th style="width: 8%; text-align: center;">S.No</th>
-                        <th style="width: 52%;">Product Details</th>
-                        <th style="width: 20%;">Quantity</th>
-                        <th style="width: 20%;">Unit Price</th>
+                        <th style="width: 5%; text-align: center;">S.No</th>
+                        <!-- Dynamic column headers based on visibleColumns -->
+                        <apex:repeat value="{!invoice.visibleColumns}" var="colName">
+                            <th>{!CASE(colName,
+                                'productName', 'Product Name',
+                                'hsnSac', 'HSN/SAC',
+                                'quantity', 'Quantity',
+                                'quantityUnit', 'Unit',
+                                'unitPrice', 'Unit Price',
+                                'rateUnit', 'Rate Unit',
+                                'discountPercent', 'Discount %',
+                                'additionalDiscountPercent', 'Add. Discount %',
+                                'taxPercent', 'Tax %',
+                                'taxAmount', 'Tax Amount',
+                                'lineAmount', 'Line Amount',
+                                colName)}</th>
+                        </apex:repeat>
                     </tr>
                 </thead>
                 <tbody>
@@ -126,9 +139,22 @@
                         <apex:variable var="rowNum" value="{!rowNum + 1}" />
                         <tr>
                             <td style="text-align: center;">{!rowNum}</td>
-                            <td>{!product.productDetail}</td>
-                            <td>{!IF(product.quantity != null, TEXT(product.quantity), '')}</td>
-                            <td>{!IF(product.unitPrice != null, TEXT(product.unitPrice), '')}</td>
+                            <!-- Dynamic data cells based on visibleColumns -->
+                            <apex:repeat value="{!invoice.visibleColumns}" var="colName">
+                                <td>{!CASE(colName,
+                                    'productName', product.productName,
+                                    'hsnSac', product.hsnSac,
+                                    'quantity', product.quantity,
+                                    'quantityUnit', product.quantityUnit,
+                                    'unitPrice', product.unitPrice,
+                                    'rateUnit', product.rateUnit,
+                                    'discountPercent', product.discountPercent,
+                                    'additionalDiscountPercent', product.additionalDiscountPercent,
+                                    'taxPercent', product.taxPercent,
+                                    'taxAmount', product.taxAmount,
+                                    'lineAmount', product.lineAmount,
+                                    '')}</td>
+                            </apex:repeat>
                         </tr>
                     </apex:repeat>
                 </tbody>
