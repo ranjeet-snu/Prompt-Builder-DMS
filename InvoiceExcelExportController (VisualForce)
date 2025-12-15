@@ -1,0 +1,143 @@
+<apex:page controller="InvoiceExcelExportController" 
+           contentType="application/vnd.ms-excel#InvoiceExport_{!fileName}.xls" 
+           showHeader="false" sidebar="false" standardStylesheets="false" 
+           applyHtmlTag="false" applyBodyTag="false">
+<head>
+<style type="text/css">
+    body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+    }
+    
+    .vendor-header {
+        background-color: #FFFFFF;
+        border: 2px solid #000;
+        padding: 5px 10px;
+        margin-bottom: 20px;
+        font-size: 14px;
+        font-weight: bold;
+    }
+    
+    .invoice-card {
+        width: 60%;
+        border-collapse: collapse;
+        margin-bottom: 20px;
+        font-size: 11px;
+    }
+    
+    .invoice-card td {
+        border: 1px solid #000;
+        padding: 6px 10px;
+    }
+    
+    .invoice-card .label-cell {
+        background-color: #D3D3D3;
+        font-weight: normal;
+        width: 40%;
+    }
+    
+    .invoice-card .value-cell {
+        background-color: #FFFFFF;
+        width: 60%;
+    }
+    
+    .product-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 10px;
+        margin-top: 10px;
+    }
+    
+    .product-table th {
+        border: 1px solid #000;
+        padding: 6px 10px;
+        text-align: left;
+        background-color: #D3D3D3;
+        font-weight: bold;
+    }
+    
+    .product-table td {
+        border: 1px solid #000;
+        padding: 6px 10px;
+        text-align: left;
+    }
+    
+    .section-break {
+        page-break-after: always;
+    }
+</style>
+</head>
+<body>
+    <!-- Loop through each vendor (for separate sheets) -->
+    <apex:repeat value="{!vendorSheets}" var="vendor">
+        <div class="vendor-header">
+            Vendor: {!vendor}
+        </div>
+        
+        <br/>
+        
+        <!-- Loop through invoices for this vendor -->
+        <apex:repeat value="{!invoicesByVendor[vendor]}" var="invoice">
+            
+            <!-- Invoice Header Card -->
+            <table class="invoice-card">
+                <tr>
+                    <td class="label-cell">Invoice Number</td>
+                    <td class="value-cell">{!invoice.invoiceNumber}</td>
+                </tr>
+                <tr>
+                    <td class="label-cell">Invoice Date</td>
+                    <td class="value-cell">{!invoice.invoiceDate}</td>
+                </tr>
+                <tr>
+                    <td class="label-cell">Invoice Value</td>
+                    <td class="value-cell">{!invoice.invoiceValue}</td>
+                </tr>
+                <tr>
+                    <td class="label-cell">Dealer Enterprise Name</td>
+                    <td class="value-cell">{!invoice.dealerName}</td>
+                </tr>
+                <tr>
+                    <td class="label-cell">Subdealer Enterprise Name</td>
+                    <td class="value-cell">{!invoice.subdealerName}</td>
+                </tr>
+                <tr>
+                    <td class="label-cell">Subdealer GST Number</td>
+                    <td class="value-cell">{!invoice.subdealerGST}</td>
+                </tr>
+            </table>
+            
+            <br/>
+            
+            <!-- Product Details Table -->
+            <table class="product-table">
+                <thead>
+                    <tr>
+                        <th style="width: 8%; text-align: center;">S.No</th>
+                        <th style="width: 52%;">Product Details</th>
+                        <th style="width: 20%;">Quantity</th>
+                        <th style="width: 20%;">Unit Price</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- Product Rows -->
+                    <apex:variable var="rowNum" value="{!0}" />
+                    <apex:repeat value="{!invoice.productLines}" var="product">
+                        <apex:variable var="rowNum" value="{!rowNum + 1}" />
+                        <tr>
+                            <td style="text-align: center;">{!rowNum}</td>
+                            <td>{!product.productDetail}</td>
+                            <td>{!IF(product.quantity != null, TEXT(product.quantity), '')}</td>
+                            <td>{!IF(product.unitPrice != null, TEXT(product.unitPrice), '')}</td>
+                        </tr>
+                    </apex:repeat>
+                </tbody>
+            </table>
+            
+            <br/><br/>
+        </apex:repeat>
+        
+        <div class="section-break"></div>
+    </apex:repeat>
+</body>
+</apex:page>
