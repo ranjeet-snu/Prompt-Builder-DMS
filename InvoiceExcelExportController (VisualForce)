@@ -1,325 +1,273 @@
-public class InvoiceExcelExportController {
-    
-    public String fileName { get; set; }
-    public List<String> vendorSheets { get; set; }
-    public Map<String, List<InvoiceWrapper>> invoicesByVendor { get; set; }
-    
-    public class InvoiceWrapper {
-        public String invoiceNumber { get; set; }
-        public String invoiceDate { get; set; }
-        public String invoiceValue { get; set; }
-        public String dealerName { get; set; }
-        public String subdealerName { get; set; }
-        public String subdealerGST { get; set; }
-        public List<ProductLineWrapper> productLines { get; set; }
-        public List<String> visibleColumns { get; set; }
-        public GstSummaryWrapper gstSummary { get; set; }
-        public Map<String, String> totals { get; set; } // NEW: Totals for each column
-        
-        public InvoiceWrapper() {
-            this.productLines = new List<ProductLineWrapper>();
-            this.visibleColumns = new List<String>();
-            this.totals = new Map<String, String>();
-        }
+<apex:page controller="InvoiceExcelExportController" 
+           contentType="application/vnd.ms-excel#InvoiceExport_{!fileName}.xls" 
+           showHeader="false" sidebar="false" standardStylesheets="false" 
+           applyHtmlTag="false" applyBodyTag="false">
+<head>
+<style type="text/css">
+    body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
     }
     
-    public class ProductLineWrapper {
-        public String productName { get; set; }
-        public String hsnSac { get; set; }
-        public String quantity { get; set; }
-        public String quantityUnit { get; set; }
-        public String unitPrice { get; set; }
-        public String rateUnit { get; set; }
-        public String discountPercent { get; set; }
-        public String additionalDiscountPercent { get; set; }
-        public String taxPercent { get; set; }
-        public String taxAmount { get; set; }
-        public String lineAmount { get; set; }
+    .vendor-header {
+        background-color: #FFFFFF;
+        border: 2px solid #000;
+        padding: 5px 10px;
+        margin-bottom: 20px;
+        font-size: 14px;
+        font-weight: bold;
     }
     
-    public class GstSummaryWrapper {
-        public String taxableValue { get; set; }
-        public String sgstPercent { get; set; }
-        public String sgstAmount { get; set; }
-        public String cgstPercent { get; set; }
-        public String cgstAmount { get; set; }
-        public String roundOff { get; set; }
-        public String finalInvoiceValue { get; set; }
-        
-        // Convert methods to properties for Visualforce access
-        public Boolean hasSgst {
-            get {
-                return String.isNotBlank(sgstPercent) || String.isNotBlank(sgstAmount);
-            }
-        }
-        
-        public Boolean hasCgst {
-            get {
-                return String.isNotBlank(cgstPercent) || String.isNotBlank(cgstAmount);
-            }
-        }
-        
-        public Boolean hasRoundOff {
-            get {
-                return String.isNotBlank(roundOff);
-            }
-        }
-        
-        public Boolean hasFinalValue {
-            get {
-                return String.isNotBlank(finalInvoiceValue);
-            }
-        }
+    .invoice-card {
+        width: 60%;
+        border-collapse: collapse;
+        margin-bottom: 20px;
+        font-size: 11px;
     }
     
-    public InvoiceExcelExportController() {
-        vendorSheets = new List<String>();
-        invoicesByVendor = new Map<String, List<InvoiceWrapper>>();
-        
-        // Get invoice records
-        List<Document_Extraction__c> invoices = [
-            SELECT Id, Invoice_Number__c, Invoice_Date__c, Invoice_Value__c,
-                   Dealer_Enterprise_Name__c, Subdealer_Enterprise_Name__c,
-                   Subdealer_GST_Number__c, Product_Details__c, GST__c
-            FROM Document_Extraction__c
-            ORDER BY Dealer_Enterprise_Name__c, Invoice_Number__c
-        ];
-        
-        for (Document_Extraction__c inv : invoices) {
-            // Skip invoices without product details
-            if (String.isBlank(inv.Product_Details__c)) {
-                continue;
-            }
-            
-            String vendor = inv.Dealer_Enterprise_Name__c != null ? 
-                           inv.Dealer_Enterprise_Name__c : 'Unknown Vendor';
-            
-            if (!invoicesByVendor.containsKey(vendor)) {
-                vendorSheets.add(vendor);
-                invoicesByVendor.put(vendor, new List<InvoiceWrapper>());
-            }
-            
-            InvoiceWrapper wrapper = new InvoiceWrapper();
-            wrapper.invoiceNumber = inv.Invoice_Number__c;
-            wrapper.invoiceDate = inv.Invoice_Date__c != null ? 
-                                 String.valueOf(inv.Invoice_Date__c) : '';
-            wrapper.invoiceValue = inv.Invoice_Value__c != null ? 
-                                  String.valueOf(inv.Invoice_Value__c) : '';
-            wrapper.dealerName = inv.Dealer_Enterprise_Name__c;
-            wrapper.subdealerName = inv.Subdealer_Enterprise_Name__c;
-            wrapper.subdealerGST = inv.Subdealer_GST_Number__c;
-            
-            // Parse product details JSON
-            parseProductDetails(inv.Product_Details__c, wrapper);
-            
-            // Parse GST Summary
-            parseGstSummary(inv.GST__c, wrapper);
-            
-            // Calculate totals for numeric columns
-            calculateTotals(wrapper);
-            
-            invoicesByVendor.get(vendor).add(wrapper);
-        }
-        
-        fileName = 'InvoiceExport_' + System.now().format('yyyyMMdd_HHmmss');
+    .invoice-card td {
+        border: 1px solid #000;
+        padding: 6px 10px;
     }
     
-    private void parseProductDetails(String productJson, InvoiceWrapper wrapper) {
-        try {
-            List<Object> products = (List<Object>) JSON.deserializeUntyped(productJson);
-            
-            Set<String> columnsWithData = new Set<String>();
-            
-            for (Object prodObj : products) {
-                Map<String, Object> product = (Map<String, Object>) prodObj;
-                
-                ProductLineWrapper line = new ProductLineWrapper();
-                
-                // Extract all fields
-                line.productName = getStringValue(product, 'productName');
-                line.hsnSac = getStringValue(product, 'hsnSac');
-                line.quantity = getStringValue(product, 'quantity');
-                line.quantityUnit = getStringValue(product, 'quantityUnit');
-                line.unitPrice = getStringValue(product, 'unitPrice');
-                line.rateUnit = getStringValue(product, 'rateUnit');
-                line.discountPercent = getStringValue(product, 'discountPercent');
-                line.additionalDiscountPercent = getStringValue(product, 'additionalDiscountPercent');
-                line.taxPercent = getStringValue(product, 'taxPercent');
-                line.taxAmount = getStringValue(product, 'taxAmount');
-                line.lineAmount = getStringValue(product, 'lineAmount');
-                
-                // Track non-null columns
-                if (String.isNotBlank(line.productName)) columnsWithData.add('productName');
-                if (String.isNotBlank(line.hsnSac)) columnsWithData.add('hsnSac');
-                if (String.isNotBlank(line.quantity)) columnsWithData.add('quantity');
-                if (String.isNotBlank(line.quantityUnit)) columnsWithData.add('quantityUnit');
-                if (String.isNotBlank(line.unitPrice)) columnsWithData.add('unitPrice');
-                if (String.isNotBlank(line.rateUnit)) columnsWithData.add('rateUnit');
-                if (String.isNotBlank(line.discountPercent)) columnsWithData.add('discountPercent');
-                if (String.isNotBlank(line.additionalDiscountPercent)) columnsWithData.add('additionalDiscountPercent');
-                if (String.isNotBlank(line.taxPercent)) columnsWithData.add('taxPercent');
-                if (String.isNotBlank(line.taxAmount)) columnsWithData.add('taxAmount');
-                if (String.isNotBlank(line.lineAmount)) columnsWithData.add('lineAmount');
-                
-                wrapper.productLines.add(line);
-            }
-            
-            // Build visible columns list in desired order
-            List<String> allColumns = new List<String>{
-                'productName', 'hsnSac', 'quantity', 'quantityUnit', 
-                'unitPrice', 'rateUnit', 'discountPercent', 
-                'additionalDiscountPercent', 'taxPercent', 'taxAmount', 'lineAmount'
-            };
-            
-            for (String col : allColumns) {
-                if (columnsWithData.contains(col)) {
-                    wrapper.visibleColumns.add(col);
-                }
-            }
-            
-        } catch (Exception e) {
-            System.debug('Error parsing product JSON: ' + e.getMessage());
-        }
+    .invoice-card .label-cell {
+        background-color: #D3D3D3;
+        font-weight: normal;
+        width: 40%;
     }
     
-    // Parse GST Summary from JSON
-    private void parseGstSummary(String gstJson, InvoiceWrapper wrapper) {
-        if (String.isBlank(gstJson)) {
-            return;
-        }
+    .invoice-card .value-cell {
+        background-color: #FFFFFF;
+        width: 60%;
+    }
+    
+    .product-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 10px;
+        margin-top: 10px;
+    }
+    
+    .product-table th {
+        border: 1px solid #000;
+        padding: 6px 10px;
+        text-align: left;
+        background-color: #D3D3D3;
+        font-weight: bold;
+    }
+    
+    .product-table td {
+        border: 1px solid #000;
+        padding: 6px 10px;
+        text-align: left;
+    }
+    
+    .total-row {
+        background-color: #E8E8E8;
+        font-weight: bold;
+    }
+    
+    .gst-summary-row {
+        background-color: #F5F5F5;
+        font-weight: bold;
+    }
+    
+    .gst-label-cell {
+        text-align: right;
+        padding-right: 20px;
+    }
+    
+    .section-break {
+        page-break-after: always;
+    }
+</style>
+</head>
+<body>
+    <!-- Loop through each vendor (for separate sheets) -->
+    <apex:repeat value="{!vendorSheets}" var="vendor">
+        <div class="vendor-header">
+            Vendor: {!vendor}
+        </div>
         
-        try {
-            Map<String, Object> gstData = (Map<String, Object>) JSON.deserializeUntyped(gstJson);
-            
-            GstSummaryWrapper gst = new GstSummaryWrapper();
-            gst.taxableValue = getStringValue(gstData, 'taxableValue');
-            gst.sgstPercent = getStringValue(gstData, 'sgstPercent');
-            gst.sgstAmount = getStringValue(gstData, 'sgstAmount');
-            gst.cgstPercent = getStringValue(gstData, 'cgstPercent');
-            gst.cgstAmount = getStringValue(gstData, 'cgstAmount');
-            gst.roundOff = getStringValue(gstData, 'roundOff');
-            gst.finalInvoiceValue = getStringValue(gstData, 'finalInvoiceValue');
-            
-            wrapper.gstSummary = gst;
-            
-        } catch (Exception e) {
-            System.debug('Error parsing GST JSON: ' + e.getMessage());
-        }
-    }
-    
-    // NEW: Calculate totals for numeric columns
-    private void calculateTotals(InvoiceWrapper wrapper) {
-        // Define which columns should be totaled
-        Set<String> numericColumns = new Set<String>{
-            'quantity', 'unitPrice', 'discountPercent', 
-            'additionalDiscountPercent', 'taxPercent', 'taxAmount', 'lineAmount'
-        };
+        <br/>
         
-        // Initialize totals map
-        Map<String, Decimal> columnSums = new Map<String, Decimal>();
+        <!-- Loop through invoices for this vendor -->
+        <apex:repeat value="{!invoicesByVendor[vendor]}" var="invoice">
+            
+            <!-- Invoice Header Card -->
+            <table class="invoice-card">
+                <tr>
+                    <td class="label-cell">Invoice Number</td>
+                    <td class="value-cell">{!invoice.invoiceNumber}</td>
+                </tr>
+                <tr>
+                    <td class="label-cell">Invoice Date</td>
+                    <td class="value-cell">{!invoice.invoiceDate}</td>
+                </tr>
+                <tr>
+                    <td class="label-cell">Invoice Value</td>
+                    <td class="value-cell">{!invoice.invoiceValue}</td>
+                </tr>
+                <tr>
+                    <td class="label-cell">Dealer Enterprise Name</td>
+                    <td class="value-cell">{!invoice.dealerName}</td>
+                </tr>
+                <tr>
+                    <td class="label-cell">Subdealer Enterprise Name</td>
+                    <td class="value-cell">{!invoice.subdealerName}</td>
+                </tr>
+                <tr>
+                    <td class="label-cell">Subdealer GST Number</td>
+                    <td class="value-cell">{!invoice.subdealerGST}</td>
+                </tr>
+            </table>
+            
+            <br/>
+            
+            <!-- Product Details Table - DYNAMIC COLUMNS -->
+            <table class="product-table">
+                <thead>
+                    <tr>
+                        <th style="width: 5%; text-align: center;">S.No</th>
+                        <!-- Dynamic column headers based on visibleColumns -->
+                        <apex:repeat value="{!invoice.visibleColumns}" var="colName">
+                            <th>{!CASE(colName,
+                                'productName', 'Product Name',
+                                'hsnSac', 'HSN/SAC',
+                                'quantity', 'Quantity',
+                                'quantityUnit', 'Unit',
+                                'unitPrice', 'Unit Price',
+                                'rateUnit', 'Rate Unit',
+                                'discountPercent', 'Discount %',
+                                'additionalDiscountPercent', 'Add. Discount %',
+                                'taxPercent', 'Tax %',
+                                'taxAmount', 'Tax Amount',
+                                'lineAmount', 'Line Amount',
+                                colName)}</th>
+                        </apex:repeat>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- Product Rows -->
+                    <apex:variable var="rowNum" value="{!0}" />
+                    <apex:repeat value="{!invoice.productLines}" var="product">
+                        <apex:variable var="rowNum" value="{!rowNum + 1}" />
+                        <tr>
+                            <td style="text-align: center;">{!rowNum}</td>
+                            <!-- Dynamic data cells based on visibleColumns -->
+                            <apex:repeat value="{!invoice.visibleColumns}" var="colName">
+                                <td>{!CASE(colName,
+                                    'productName', product.productName,
+                                    'hsnSac', product.hsnSac,
+                                    'quantity', product.quantity,
+                                    'quantityUnit', product.quantityUnit,
+                                    'unitPrice', product.unitPrice,
+                                    'rateUnit', product.rateUnit,
+                                    'discountPercent', product.discountPercent,
+                                    'additionalDiscountPercent', product.additionalDiscountPercent,
+                                    'taxPercent', product.taxPercent,
+                                    'taxAmount', product.taxAmount,
+                                    'lineAmount', product.lineAmount,
+                                    '')}</td>
+                            </apex:repeat>
+                        </tr>
+                    </apex:repeat>
+                    
+                    <!-- NEW: Total Row for Line Items -->
+                    <tr class="total-row">
+                        <td style="text-align: right;">Total</td>
+                        <apex:repeat value="{!invoice.visibleColumns}" var="colName">
+                            <td>
+                                <!-- Show total only for quantity and lineAmount -->
+                                <apex:outputText value="{!invoice.totals[colName]}" rendered="{!OR(
+                                    colName == 'quantity',
+                                    colName == 'lineAmount'
+                                )}" />
+                            </td>
+                        </apex:repeat>
+                    </tr>
+                    
+                    <!-- GST Summary Section -->
+                    <apex:outputPanel rendered="{!invoice.gstSummary != null}">
+                        <!-- Empty row for spacing -->
+                        <tr>
+                            <td colspan="{!invoice.visibleColumns.size + 1}" style="border: none; height: 10px;"></td>
+                        </tr>
+                        
+                        <!-- Find the index of taxPercent/discountPercent (Rate column) and lineAmount columns -->
+                        <apex:variable var="rateColIndex" value="{!0}" />
+                        <apex:variable var="amountColIndex" value="{!0}" />
+                        <apex:variable var="colIndex" value="{!0}" />
+                        
+                        <apex:repeat value="{!invoice.visibleColumns}" var="col">
+                            <apex:variable var="colIndex" value="{!colIndex + 1}" />
+                            <apex:outputPanel rendered="{!OR(col == 'taxPercent', col == 'discountPercent')}">
+                                <apex:variable var="rateColIndex" value="{!colIndex}" />
+                            </apex:outputPanel>
+                            <apex:outputPanel rendered="{!col == 'lineAmount'}">
+                                <apex:variable var="amountColIndex" value="{!colIndex}" />
+                            </apex:outputPanel>
+                        </apex:repeat>
+                        
+                        <!-- SGST Row -->
+                        <apex:outputPanel rendered="{!invoice.gstSummary.hasSgst}">
+                            <tr class="gst-summary-row">
+                                <td colspan="{!rateColIndex}" class="gst-label-cell">SGST Sales</td>
+                                <td>{!invoice.gstSummary.sgstPercent}</td>
+                                <apex:variable var="remainingCols" value="{!amountColIndex - rateColIndex - 1}" />
+                                <apex:outputPanel rendered="{!remainingCols > 0}">
+                                    <td colspan="{!remainingCols}"></td>
+                                </apex:outputPanel>
+                                <td>{!invoice.gstSummary.sgstAmount}</td>
+                            </tr>
+                        </apex:outputPanel>
+                        
+                        <!-- CGST Row -->
+                        <apex:outputPanel rendered="{!invoice.gstSummary.hasCgst}">
+                            <tr class="gst-summary-row">
+                                <td colspan="{!rateColIndex}" class="gst-label-cell">CGST Sales</td>
+                                <td>{!invoice.gstSummary.cgstPercent}</td>
+                                <apex:variable var="remainingCols" value="{!amountColIndex - rateColIndex - 1}" />
+                                <apex:outputPanel rendered="{!remainingCols > 0}">
+                                    <td colspan="{!remainingCols}"></td>
+                                </apex:outputPanel>
+                                <td>{!invoice.gstSummary.cgstAmount}</td>
+                            </tr>
+                        </apex:outputPanel>
+                        
+                        <!-- Round Off Row -->
+                        <apex:outputPanel rendered="{!invoice.gstSummary.hasRoundOff}">
+                            <tr class="gst-summary-row">
+                                <td colspan="{!rateColIndex}" class="gst-label-cell">Round Off</td>
+                                <td></td>
+                                <apex:variable var="remainingCols" value="{!amountColIndex - rateColIndex - 1}" />
+                                <apex:outputPanel rendered="{!remainingCols > 0}">
+                                    <td colspan="{!remainingCols}"></td>
+                                </apex:outputPanel>
+                                <td>{!invoice.gstSummary.roundOff}</td>
+                            </tr>
+                        </apex:outputPanel>
+                        
+                        <!-- Final Invoice Value Row -->
+                        <apex:outputPanel rendered="{!invoice.gstSummary.hasFinalValue}">
+                            <tr class="gst-summary-row">
+                                <td colspan="{!rateColIndex}" class="gst-label-cell">Final Invoice Value</td>
+                                <td></td>
+                                <apex:variable var="remainingCols" value="{!amountColIndex - rateColIndex - 1}" />
+                                <apex:outputPanel rendered="{!remainingCols > 0}">
+                                    <td colspan="{!remainingCols}"></td>
+                                </apex:outputPanel>
+                                <td>{!invoice.gstSummary.finalInvoiceValue}</td>
+                            </tr>
+                        </apex:outputPanel>
+                    </apex:outputPanel>
+                </tbody>
+            </table>
+            
+            <br/><br/>
+        </apex:repeat>
         
-        // Sum up each numeric column
-        for (ProductLineWrapper line : wrapper.productLines) {
-            // Quantity
-            if (String.isNotBlank(line.quantity)) {
-                Decimal val = parseDecimal(line.quantity);
-                if (val != null) {
-                    columnSums.put('quantity', (columnSums.get('quantity') != null ? columnSums.get('quantity') : 0) + val);
-                }
-            }
-            
-            // Unit Price
-            if (String.isNotBlank(line.unitPrice)) {
-                Decimal val = parseDecimal(line.unitPrice);
-                if (val != null) {
-                    columnSums.put('unitPrice', (columnSums.get('unitPrice') != null ? columnSums.get('unitPrice') : 0) + val);
-                }
-            }
-            
-            // Discount Percent
-            if (String.isNotBlank(line.discountPercent)) {
-                Decimal val = parseDecimal(line.discountPercent);
-                if (val != null) {
-                    columnSums.put('discountPercent', (columnSums.get('discountPercent') != null ? columnSums.get('discountPercent') : 0) + val);
-                }
-            }
-            
-            // Additional Discount Percent
-            if (String.isNotBlank(line.additionalDiscountPercent)) {
-                Decimal val = parseDecimal(line.additionalDiscountPercent);
-                if (val != null) {
-                    columnSums.put('additionalDiscountPercent', (columnSums.get('additionalDiscountPercent') != null ? columnSums.get('additionalDiscountPercent') : 0) + val);
-                }
-            }
-            
-            // Tax Percent
-            if (String.isNotBlank(line.taxPercent)) {
-                Decimal val = parseDecimal(line.taxPercent);
-                if (val != null) {
-                    columnSums.put('taxPercent', (columnSums.get('taxPercent') != null ? columnSums.get('taxPercent') : 0) + val);
-                }
-            }
-            
-            // Tax Amount
-            if (String.isNotBlank(line.taxAmount)) {
-                Decimal val = parseDecimal(line.taxAmount);
-                if (val != null) {
-                    columnSums.put('taxAmount', (columnSums.get('taxAmount') != null ? columnSums.get('taxAmount') : 0) + val);
-                }
-            }
-            
-            // Line Amount
-            if (String.isNotBlank(line.lineAmount)) {
-                Decimal val = parseDecimal(line.lineAmount);
-                if (val != null) {
-                    columnSums.put('lineAmount', (columnSums.get('lineAmount') != null ? columnSums.get('lineAmount') : 0) + val);
-                }
-            }
-        }
-        
-        // Convert decimal totals to formatted strings
-        for (String col : columnSums.keySet()) {
-            Decimal total = columnSums.get(col);
-            if (total != null) {
-                wrapper.totals.put(col, String.valueOf(total.setScale(2)));
-            }
-        }
-    }
-    
-    // Helper method to parse decimal values
-    private Decimal parseDecimal(String value) {
-        if (String.isBlank(value)) {
-            return null;
-        }
-        try {
-            return Decimal.valueOf(value);
-        } catch (Exception e) {
-            return null;
-        }
-    }
-    
-    private String getStringValue(Map<String, Object> dataMap, String key) {
-        Object value = dataMap.get(key);
-        if (value == null) return null;
-        String strValue = String.valueOf(value);
-        // Return null if value is empty string
-        return String.isNotBlank(strValue) ? strValue : null;
-    }
-    
-    public String getColumnLabel(String columnName) {
-        Map<String, String> labelMap = new Map<String, String>{
-            'productName' => 'Product Name',
-            'hsnSac' => 'HSN/SAC',
-            'quantity' => 'Quantity',
-            'quantityUnit' => 'Unit',
-            'unitPrice' => 'Unit Price',
-            'rateUnit' => 'Rate Unit',
-            'discountPercent' => 'Discount %',
-            'additionalDiscountPercent' => 'Add. Discount %',
-            'taxPercent' => 'Tax %',
-            'taxAmount' => 'Tax Amount',
-            'lineAmount' => 'Line Amount'
-        };
-        return labelMap.containsKey(columnName) ? labelMap.get(columnName) : columnName;
-    }
-}
+        <div class="section-break"></div>
+    </apex:repeat>
+</body>
+</apex:page>
